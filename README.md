@@ -2,7 +2,7 @@
 
 **Finley Hardie — INFO 3200 · University of Denver**
 
-Data visualization work from INFO 3200 at the Daniels College of Business. Projects cover the full range of ggplot2 chart types, geospatial mapping with real crime data, and the statistical reasoning behind each visualization — built around the Grammar of Graphics framework.
+Data visualization work from INFO 3200 at the Daniels College of Business. Projects cover the full range of ggplot2 chart types, geospatial mapping with real crime data, and the statistical reasoning behind each visualization, built around the Grammar of Graphics framework. Still adding to this one.
 
 ---
 
