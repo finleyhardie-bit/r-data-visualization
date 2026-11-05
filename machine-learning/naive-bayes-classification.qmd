@@ -1,0 +1,114 @@
+---
+title: "Simple Classification"
+subtitle: "Week Five Class Two"
+author: "Finley Hardie"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2) # For making data viz
+library(dplyr) # Data manipulation
+library(janitor) # clean names
+library(readxl)
+library(e1071)
+```
+
+## Instructions
+
+Follow along with Ryan's analysis. For most of this work, we will work together. You will have to do a few problems on your own or in a group at the completion of the assignment.
+
+## Together
+
+## Your Turn
+
+```{r}
+fd <- read.csv("~/Desktop/School/Current Classes/INFO_3200/data/Accident.csv") |>
+  clean_names() |>
+  mutate(injury = ifelse(injury == 1, T, F),
+         traffic_control = as.factor(traffic_control),
+         weather = as.factor(weather))
+```
+
+1. Compute a summary table for these data
+
+```{r}
+#| label: summary-table
+
+# Overall summary of the data frame
+summary(fd)
+
+# Counts of injury by traffic_control
+fd |>
+  count(traffic_control, injury) |>
+  tidyr::pivot_wider(names_from = injury,
+                     values_from = n,
+                     values_fill = 0,
+                     names_prefix = "injury_")
+
+# Counts of injury by weather
+fd |>
+  count(weather, injury) |>
+  tidyr::pivot_wider(names_from = injury,
+                     values_from = n,
+                     values_fill = 0,
+                     names_prefix = "injury_")
+```
+
+2. Fit a naive Bayes model to predict the probability of `injury` conditioned on `traffic_control` and `weather`.
+
+```{r}
+#| label: fit-naive-bayes
+
+nb_model <- naiveBayes(injury ~ traffic_control + weather, data = fd)
+nb_model
+```
+
+3. Compute the confusion matrix.
+
+```{r}
+#| label: confusion-matrix
+
+preds <- predict(nb_model, newdata = fd)
+
+conf_mat <- table(Predicted = preds, Actual = fd$injury)
+conf_mat
+```
+
+4. Compute the following summary statistics:
+    a. Accuracy
+    b. Precision
+    c. Sensitivity
+    d. Specificity
+
+```{r}
+accuracy <- .75
+```
+
+```{r}
+#| label: classification-stats
+
+# Treat TRUE (injury occurred) as the positive class
+TP <- sum(preds == TRUE  & fd$injury == TRUE)
+TN <- sum(preds == FALSE & fd$injury == FALSE)
+FP <- sum(preds == TRUE  & fd$injury == FALSE)
+FN <- sum(preds == FALSE & fd$injury == TRUE)
+
+accuracy    <- (TP + TN) / (TP + TN + FP + FN)
+precision   <- TP / (TP + FP)
+sensitivity <- TP / (TP + FN)   # a.k.a. recall, true positive rate
+specificity <- TN / (TN + FP)   # true negative rate
+
+tibble::tibble(
+  metric = c("Accuracy", "Precision", "Sensitivity", "Specificity"),
+  value  = round(c(accuracy, precision, sensitivity, specificity), 3)
+)
+```
+
+    The accuracy for this model is `r accuracy`.
+
+*Reflection: the part that tripped me up was figuring out which class counts as "positive" — i kept second-guessing whether TRUE injury or FALSE was the one i should be predicting against. once i locked that in the precision/sensitivity/specificity formulas all kind of clicked. also kinda surprised how short the actual naiveBayes() call is, most of the work is in the confusion matrix math after.*

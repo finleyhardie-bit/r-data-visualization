@@ -1,0 +1,105 @@
+---
+title: "K Nearest Neighbor Classification"
+subtitle: "Week Seven Class One"
+author: "Finley Hardie"
+format: 
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2) # For making data viz
+library(dplyr) # Data manipulation
+library(janitor) # clean names
+library(tidymodels)
+library(vip) 
+library(kknn) # package that contains the KNN engine
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd <- read.csv("~/Desktop/School/Current Classes/INFO_3200/data/winequality-red.csv", sep = ";") |> 
+  clean_names() |> 
+  mutate(quality_cat = as.factor(ifelse(quality >= 7, "High", "Low")))
+```
+
+## Instructions
+
+Use the `winequality-red.csv` data set to answer the following questions.
+
+1. Split your data into training (85%) and testing (15%) samples.
+
+```{r}
+set.seed(371)
+
+fd_split <- initial_split(fd, prop = 0.85)
+
+fd_train <- training(fd_split)
+fd_test  <- testing(fd_split)
+
+```
+
+2. Fit a KNN classifier to predict `purchase` from all the other variables (exclude `purchase_amt`).
+```{r}
+wine_knn_setup <- nearest_neighbor() |> 
+  set_engine("kknn") |> 
+  set_mode("classification")
+
+wine_knn_fit <- wine_knn_setup |> 
+  fit(quality_cat ~ . - quality, data = fd_train)
+```
+
+
+3. Compute the confusion matrix for the training sample. What is the overall accuracy.
+```{r}
+wine_train_pred <- wine_knn_fit |> 
+  augment(fd_train)
+
+wine_train_pred |> 
+  conf_mat(truth = quality_cat, estimate = .pred_class)
+
+my_class_metrics <- metric_set(accuracy, sensitivity, specificity, precision)
+
+wine_train_pred |> 
+  my_class_metrics(truth = quality_cat, estimate = .pred_class)
+```
+
+4. Compute the sensitivity for the testing sample. What does this value tell you? 
+```{r}
+wine_test_pred <- wine_knn_fit |> 
+  augment(fd_test)
+
+wine_test_pred |> 
+  my_class_metrics(truth = quality_cat, estimate = .pred_class)
+```
+
+5. Compare your KNN to a classification tree with respect to training and testing overall accuracy. 
+```{r}
+# Set up and fit the classification tree
+wine_cl_setup <- decision_tree() |> 
+  set_engine("rpart") |> 
+  set_mode("classification")
+
+wine_cl_fit <- wine_cl_setup |> 
+  fit(quality_cat ~ . - quality, data = fd_train)
+
+# Training accuracy for the tree
+wine_train_pred_cl <- wine_cl_fit |> 
+  augment(fd_train)
+
+wine_train_pred_cl |> 
+  my_class_metrics(truth = quality_cat, estimate = .pred_class)
+
+# Testing accuracy for the tree
+wine_test_pred_cl <- wine_cl_fit |> 
+  augment(fd_test)
+
+wine_test_pred_cl |> 
+  my_class_metrics(truth = quality_cat, estimate = .pred_class)
+```
+

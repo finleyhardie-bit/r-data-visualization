@@ -1,0 +1,48 @@
+---
+title: "Simple Data Visualizations (Cont.)"
+subtitle: "Week One Class Two"
+author: "Finley Hardie"
+format: 
+  html:
+    self-contained: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2) # For making data viz
+library(readxl) # Reading data in from Excel
+library(dplyr) # Data manipulation
+library(forcats) # Factor reordering
+library(lubridate) # Working with dates
+library(janitor) # cleaning functions, e.g. cleaning names
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd <- read_xlsx("sample-superstore.xlsx", sheet = "Orders")
+```
+
+## Instructions
+
+For questions 1 - 6, you will follow along with Ryan and insert the data visualizations into this Quarto document. You will use the `sample-superstore.xlsx` file located on Canvas to generate the figures. We will work in an `.R` file and transfer our code to this Quarto document for submission in Canvas. You will have to solve problem 7 and 8 on your own or with friends. 
+
+1.  Create a vertical bar chart showing total `Sales` for each `Sub-Category`. Note that in order to create this visualization, we will need to group our data on `Sub-Category` and then proceed. Note that we should order the bars from tallest (most sales) to shortest (least sales). To do this, we have to group our data and sum across the categories. 
+
+2. Create another bar chart using `Category` on the x axis and total `Sales` on the y axis.
+
+3. Facet the figure by `Region`. We need to group by `Region` to do this. 
+
+4. Add a color aesthetic to `Sales`. 
+
+5. Create a line graph showing `Sales` by month. We will need to use the `month` function from the lubridate package. 
+
+6. Add a year variable and group the figure in 5 by year. 
+
+7. Recreate 6 but facet by the `Segment` variable. Choose either one row or one column for the facet function call. 
+
+8. Create a figure that shows the total number of orders shipped by month over each year. You will have to group by month and year, and then count (use `n()` function) the number of orders. 
+

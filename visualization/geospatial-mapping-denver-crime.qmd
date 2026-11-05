@@ -1,0 +1,137 @@
+---
+title: "My First Dashboard"
+author: "Finley Hardie"
+format: 
+  dashboard:
+    embed-resources: true
+---
+
+```{r}
+#| message: false
+
+library(ggplot2) # For making data viz
+library(dplyr) # Data manipulation
+library(janitor) # clean names
+library(sf)
+library(rnaturalearth) # gives "world" below
+library(rnaturalearthdata)
+library(leaflet) # interactive map
+library(maps)
+library(gt)
+library(lubridate)
+```
+
+```{r}
+#| cache: true
+
+fd <- read.csv("crime.csv") |> 
+  clean_names()
+
+## Let's just take a sample of these data
+set.seed(19823) # setting the seed ensures our sample will be the same. 
+fd_sample <- fd |> 
+  sample_n(size = 100)
+```
+
+```{r}
+world <- ne_countries(scale = "medium", returnclass = "sf")
+states <- st_as_sf(map("state", plot = FALSE, fill = TRUE))
+counties <- st_as_sf(map("county", plot = FALSE, fill = TRUE))
+counties <- subset(counties, grepl("colorado", counties$ID))
+
+p <- ggplot(data = world) + 
+  geom_sf() +
+  geom_sf(data = states, fill = NA) + 
+  geom_sf(data = counties, fill = NA) +
+  geom_point(data = fd, aes(x = geo_lon, y = geo_lat)) +
+  coord_sf(xlim = c(-110, -100), ylim = c(35, 45), expand = FALSE)
+```
+
+
+```{r}
+# Create n most common crime categories table
+top_n <- fd |> 
+  group_by(offense_category_id) |> 
+  summarize(total_crimes = n()) |> # count(*)
+  arrange(desc(total_crimes)) |> 
+  gt()
+```
+
+## Row {.tabset}
+
+::: {.card title="Facet The Plot"}
+
+```{r}
+top_n
+```
+
+::: {.card-body}
+This table shows the most common crime categories in Denver, sorted by frequency.
+You can see that certain types of crimes are significantly more prevalent than others.
+
+:::
+:::
+
+::: {.card title="100 Crimes in Denver"}
+```{r}
+p
+```
+
+::: {.card-body}
+This polot shows 100 crimes in Denver. 
+
+:::
+:::
+
+::: {.card title="Leaflet Visualization"}
+
+```{r}
+leaflet() |> 
+  addTiles() |> 
+  setView(lng = -104.98470000, lat = 39.73915000, zoom = 10) |> 
+  addMarkers(data = fd_sample, lng = ~geo_lon, lat = ~geo_lat, 
+             popup = ~offense_category_id)  
+```
+
+::: {.card-body}
+Here is a leaflet visualization of the same data. Notice that you can zoom in and out
+within the visulation itself. You can also change the default zoom level in the setView 
+function above.
+
+:::
+:::
+
+```{r}
+#| title: Top Five Crimes Only
+
+top_5_crimes <- fd |> 
+  count(offense_category_id) |> 
+  arrange(desc(n)) |> 
+  top_n(5) |> 
+  pull(offense_category_id)
+
+top_5_df <- fd |> 
+  filter(offense_category_id %in% top_5_crimes) |> 
+  mutate(reported_month = month(mdy_hm(reported_date), label = T),
+         reported_year = year(mdy_hm(reported_date))) |> 
+  group_by(reported_year, reported_month) |> 
+  summarize(total_crimes = n()) |> 
+  ungroup()
+
+p <- ggplot(data = top_5_df,
+            aes(x = reported_month, y = total_crimes, group = reported_year,
+                colour = as.factor(reported_year)))
+p + geom_line() +
+  labs(color = "Year",
+       x = "Month",
+       y = "Total Crimes") +
+  scale_color_brewer(palette = "Dark2") +
+  theme_bw()
+```
+
+```{r}
+#| title: Facet The Plot
+
+```
+
+

@@ -1,0 +1,259 @@
+---
+title: "ROC Curves, Precision-Recall, and Probability Calibration"
+subtitle: "Week Ten, Class Two"
+author: "Finley Hardie"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2)
+library(dplyr)
+library(janitor)
+library(tidymodels)
+library(xgboost)
+library(probably)
+```
+
+## Introduction
+
+We will extend the evaluation framework from class using the white wine quality
+data. You will fit three classifiers, compare them using ROC and precision-recall
+curves, explore the effect of the classification threshold, and assess probability
+calibration.
+
+```{r}
+fd <- read.csv("~/Desktop/School/Current Classes/INFO_3200/data/winequality-white.csv", sep = ";") |>
+  clean_names() |>
+  mutate(quality_wine = as.factor(ifelse(quality >= 7, "High", "Low")))
+```
+
+1. Split the data into training (80%) and testing (20%) samples. Check the
+class balance in the test set. What fraction of wines are "High" quality?
+Why does this matter for model evaluation?
+
+```{r}
+set.seed(8675309)
+
+split <- initial_split(fd, prop = 0.80, strata = quality_wine)
+train <- training(split)
+test  <- testing(split)
+
+# Class balance in test set
+test |>
+  count(quality_wine) |>
+  mutate(fraction = n / sum(n))
+
+# About 22% of wines are "High" quality — the classes are imbalanced.
+# This matters because accuracy alone is misleading: a model that always
+# predicts "Low" would still be ~78% accurate. Metrics like ROC AUC,
+# PR AUC, and the choice of threshold all need to account for this imbalance.
+```
+
+2. Fit the following three classifiers on the training data and obtain
+probability predictions on the test set using `augment()`:
+  a. Logistic regression (`logistic_reg()`)
+  b. Random forest (`rand_forest(mtry = 4, trees = 500)` with `set_engine("ranger", probability = TRUE)`)
+  c. Gradient boosted classifier (`boost_tree(trees = 500, tree_depth = 3, learn_rate = 0.05)`)
+
+```{r}
+#| cache: true
+
+rec <- recipe(quality_wine ~ ., data = train) |>
+  step_rm(quality) |>
+  step_normalize(all_numeric_predictors())
+
+# --- Logistic Regression ---
+lr_spec <- logistic_reg() |> set_engine("glm")
+lr_wf   <- workflow() |> add_recipe(rec) |> add_model(lr_spec)
+lr_fit  <- fit(lr_wf, data = train)
+lr_preds <- augment(lr_fit, new_data = test)
+
+# --- Random Forest ---
+rf_spec <- rand_forest(mtry = 4, trees = 500) |>
+  set_engine("ranger", probability = TRUE) |>
+  set_mode("classification")
+rf_wf   <- workflow() |> add_recipe(rec) |> add_model(rf_spec)
+rf_fit  <- fit(rf_wf, data = train)
+rf_preds <- augment(rf_fit, new_data = test)
+
+# --- Gradient Boosted Trees ---
+xgb_spec <- boost_tree(trees = 500, tree_depth = 3, learn_rate = 0.05) |>
+  set_engine("xgboost") |>
+  set_mode("classification")
+xgb_wf   <- workflow() |> add_recipe(rec) |> add_model(xgb_spec)
+xgb_fit  <- fit(xgb_wf, data = train)
+xgb_preds <- augment(xgb_fit, new_data = test)
+```
+
+3. Plot all three ROC curves on the same figure using `ggplot2`. Which model
+dominates? Is there a region of the curve (low FPR vs. high FPR) where one
+model is clearly superior to the others?
+
+```{r}
+# Build ROC curve data for each model
+roc_lr  <- roc_curve(lr_preds,  truth = quality_wine, .pred_High) |> mutate(model = "Logistic Regression")
+roc_rf  <- roc_curve(rf_preds,  truth = quality_wine, .pred_High) |> mutate(model = "Random Forest")
+roc_xgb <- roc_curve(xgb_preds, truth = quality_wine, .pred_High) |> mutate(model = "XGBoost")
+
+roc_all <- bind_rows(roc_lr, roc_rf, roc_xgb)
+
+ggplot(roc_all, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line(linewidth = 1) +
+  geom_abline(linetype = "dashed", color = "grey50") +
+  scale_color_manual(values = c("steelblue", "darkorange", "forestgreen")) +
+  labs(
+    title = "ROC Curves — Three Classifiers",
+    x = "False Positive Rate (1 − Specificity)",
+    y = "True Positive Rate (Sensitivity)",
+    color = "Model"
+  ) +
+  theme_minimal()
+
+# XGBoost and Random Forest generally dominate Logistic Regression.
+# At low FPR (< 0.1) — where precision matters most — XGBoost tends to
+# pull ahead slightly. At higher FPR, all three converge. Logistic
+# regression lags across most of the curve.
+```
+
+4. Compute ROC AUC and PR AUC for all three models. Arrange the results in a
+single table. Do the two metrics agree on which model is best? If not, which
+metric is more appropriate here and why?
+
+```{r}
+compute_metrics <- function(preds, model_name) {
+  bind_rows(
+    roc_auc(preds, truth = quality_wine, .pred_High) |> mutate(metric = "ROC AUC"),
+    pr_auc(preds,  truth = quality_wine, .pred_High) |> mutate(metric = "PR AUC")
+  ) |>
+    select(metric, .estimate) |>
+    mutate(model = model_name)
+}
+
+metrics_table <- bind_rows(
+  compute_metrics(lr_preds,  "Logistic Regression"),
+  compute_metrics(rf_preds,  "Random Forest"),
+  compute_metrics(xgb_preds, "XGBoost")
+) |>
+  tidyr::pivot_wider(names_from = metric, values_from = .estimate) |>
+  arrange(desc(`ROC AUC`))
+
+metrics_table
+
+# Both metrics typically agree that tree-based models outperform logistic
+# regression. Given the class imbalance (~22% High), PR AUC is the more
+# informative metric: it focuses on the minority class and is more sensitive
+# to how well the model identifies "High" quality wines without flooding
+# predictions with false positives.
+```
+
+5. Using the gradient boosted model's predictions, find the probability threshold
+that maximises Youden's J statistic (sensitivity + specificity − 1). Apply that
+threshold to generate a new predicted class column and compare the resulting
+confusion matrix to the default 0.5 threshold. What changed?
+
+```{r}
+# Build full ROC curve for XGBoost
+roc_xgb_full <- roc_curve(xgb_preds, truth = quality_wine, .pred_High)
+
+# Youden's J = sensitivity + specificity - 1
+best_thresh <- roc_xgb_full |>
+  mutate(j_stat = sensitivity + specificity - 1) |>
+  slice_max(j_stat, n = 1)
+
+best_thresh
+
+youden_threshold <- best_thresh$.threshold
+
+# Default 0.5 confusion matrix
+xgb_preds |>
+  mutate(.pred_class_05 = factor(ifelse(.pred_High >= 0.5, "High", "Low"),
+                                  levels = c("High", "Low"))) |>
+  conf_mat(truth = quality_wine, estimate = .pred_class_05)
+
+# Youden's J threshold confusion matrix
+xgb_preds |>
+  mutate(.pred_class_youden = factor(ifelse(.pred_High >= youden_threshold, "High", "Low"),
+                                      levels = c("High", "Low"))) |>
+  conf_mat(truth = quality_wine, estimate = .pred_class_youden)
+
+# The Youden threshold is typically lower than 0.5 for an imbalanced dataset.
+# This recovers more true "High" quality wines (higher sensitivity / recall)
+# at the cost of more false positives. The default 0.5 is overly conservative
+# and misses many positives in this imbalanced setting.
+```
+
+6. Suppose the cost of a missed "High" quality wine (false negative) is five
+times the cost of a false alarm (false positive). Using the precision-recall
+curve and/or the ROC curve, identify a threshold that reflects this cost
+asymmetry. Justify your choice.
+
+```{r}
+# Cost-sensitive threshold: cost_FN = 5 * cost_FP
+# On the ROC curve, the optimal slope = (cost_FP / cost_FN) * (N_neg / N_pos)
+# = (1/5) * (n_Low / n_High)
+
+n_high <- sum(test$quality_wine == "High")
+n_low  <- sum(test$quality_wine == "Low")
+cost_ratio <- (1 / 5) * (n_low / n_high)
+
+# Find threshold where ROC slope ≈ cost_ratio
+# Approximate by finding where (Δsensitivity / Δspecificity) is closest to cost_ratio
+roc_cost <- roc_xgb_full |>
+  mutate(
+    d_sens = c(diff(sensitivity), NA),
+    d_spec = c(diff(specificity), NA),
+    slope  = abs(d_sens / d_spec)
+  ) |>
+  filter(!is.na(slope)) |>
+  mutate(diff_from_target = abs(slope - cost_ratio)) |>
+  slice_min(diff_from_target, n = 1)
+
+cost_threshold <- roc_cost$.threshold
+cat("Cost-sensitive threshold:", round(cost_threshold, 4), "\n")
+
+# Apply it and check recall
+xgb_preds |>
+  mutate(.pred_cost = factor(ifelse(.pred_High >= cost_threshold, "High", "Low"),
+                              levels = c("High", "Low"))) |>
+  conf_mat(truth = quality_wine, estimate = .pred_cost)
+
+# Because false negatives are 5x more costly, we set a lower classification
+# threshold than the default 0.5. This shifts the operating point on the ROC
+# curve toward higher sensitivity, accepting more false positives to ensure
+# "High" quality wines are rarely missed. The cost ratio determines the
+# exact slope at which the optimal point lies on the ROC curve.
+```
+
+7. Plot calibration curves (`cal_plot_breaks()` from the `probably` package)
+for all three models. Which model is best calibrated? Does the best-calibrated
+model also have the highest AUC?
+
+```{r}
+# probably expects a two_class_pred or tibble with truth + predicted probabilities
+# cal_plot_breaks works directly on augmented tibbles
+
+p_lr <- cal_plot_breaks(lr_preds,  truth = quality_wine, estimate = .pred_High) +
+  ggtitle("Logistic Regression") + theme_minimal()
+
+p_rf <- cal_plot_breaks(rf_preds,  truth = quality_wine, estimate = .pred_High) +
+  ggtitle("Random Forest") + theme_minimal()
+
+p_xgb <- cal_plot_breaks(xgb_preds, truth = quality_wine, estimate = .pred_High) +
+  ggtitle("XGBoost") + theme_minimal()
+
+library(patchwork)
+p_lr | p_rf | p_xgb
+
+# Logistic regression is typically the best-calibrated of the three —
+# its predicted probabilities more closely follow the diagonal (perfect
+# calibration). Tree-based models like random forests and gradient boosters
+# are known to produce overconfident or poorly-spread probability estimates.
+# It is common for the best-calibrated model to NOT have the highest AUC:
+# calibration and discrimination are separate properties. A model can rank
+# cases well (high AUC) while still mis-stating actual probabilities.
+```

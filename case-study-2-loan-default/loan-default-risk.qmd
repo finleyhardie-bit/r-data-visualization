@@ -1,0 +1,559 @@
+---
+title: "Case Study Two"
+subtitle: "Predicting Loan Default Risk: A Comparison of Statistical Learning Methods"
+author: "Finley Hardie"
+format:
+  html:
+    self-contained: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2)
+library(dplyr)
+library(janitor)
+library(tidymodels)
+library(ranger)
+library(baguette)
+library(rpart.plot)
+library(vip)
+library(gt)
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd <- read.csv("~/Desktop/School/Current Classes/INFO_3200/Case-Study-2/loan_applications.csv") |>
+  mutate(
+    risk_flag       = factor(risk_flag),
+    housing         = factor(housing),
+    marital_status  = factor(marital_status),
+    prior_default   = factor(prior_default),
+    employment_type = factor(employment_type)
+  ) |>
+  na.omit()
+```
+
+---
+
+## Part A: Exploratory Data Analysis
+
+### Problem 1
+
+How many complete cases remain after `na.omit()`? Report the class distribution of `risk_flag` (count and percentage for good and bad).
+
+```{r}
+# Number of complete cases
+nrow(fd)
+
+# Class distribution
+fd |>
+  count(risk_flag) |>
+  mutate(pct = round(n / sum(n) * 100, 1))
+```
+
+*Observations: After removing rows with missing values, 3,357 complete cases remain. Of these, 2,433 are classified as "good" (72.5%) and 924 as "bad" (27.5%), indicating a class imbalance where the majority of applicants are not default risks.*
+
+### Problem 2
+
+Create a histogram of the `loan_amount` variable. Describe the shape of the distribution.
+
+```{r}
+ggplot(fd, aes(x = loan_amount)) +
+  geom_histogram(bins = 40, fill = "steelblue", color = "white") +
+  labs(
+    title = "Distribution of Loan Amount",
+    x = "Loan Amount ($)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+*Description: The distribution is right-skewed. Most applicants request between \$3,000–\$8,000. About 93% fall below \$10,000, with very few above \$12,000.*
+
+### Problem 3
+
+Create figures comparing `annual_income` and `prior_default` against `risk_flag`. What do you notice?
+
+```{r}
+ggplot(fd, aes(x = risk_flag, y = annual_income, fill = risk_flag)) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  labs(
+    title = "Annual Income by Default Risk",
+    x = "Risk Flag",
+    y = "Annual Income ($)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+ggplot(fd, aes(x = prior_default, fill = risk_flag)) +
+  geom_bar(position = "fill") +
+  labs(
+    title = "Default Risk by Prior Default History",
+    x = "Prior Default",
+    y = "Proportion",
+    fill = "Risk Flag"
+  ) +
+  theme_minimal()
+```
+
+*Observations: Applicants flagged as "bad" risk tend to have lower annual incomes than "good" applicants, though there is substantial overlap between the two groups. Prior default history shows a much stronger separation. Applicants with a prior default are dramatically more likely to be flagged as "bad" risk, making it a strong predictor of default.*
+
+### Problem 4
+
+Create one additional EDA figure of your choice. Describe what you find.
+
+*What I am investigating: Whether total debt relative to annual income (a debt-to-income ratio) differs between good and bad risk applicants.*
+
+```{r}
+fd |>
+  mutate(dti = total_debt / annual_income) |>
+  ggplot(aes(x = risk_flag, y = dti, fill = risk_flag)) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  labs(
+    title = "Debt-to-Income Ratio by Default Risk",
+    x = "Risk Flag",
+    y = "Debt-to-Income Ratio"
+  ) +
+  theme_minimal()
+```
+
+*Observations: Bad-risk applicants have a slightly higher median debt-to-income ratio (0.23) compared to good-risk applicants (0.21), though the difference is small and the distributions overlap substantially. Both groups contain extreme outliers where debt far exceeds income. DTI alone is not a strong separator between risk groups.*
+
+---
+
+## Part B: Classification
+
+We will predict `risk_flag` (good or bad default risk) using all variables except `loan_amount`.
+
+### Setup — Train/Test Split
+
+```{r}
+set.seed(31)
+fd_split <- initial_split(fd, prop = 0.8)
+fd_train <- training(fd_split)
+fd_test  <- testing(fd_split)
+
+my_class_metrics <- metric_set(accuracy, sensitivity, specificity, precision)
+```
+
+### Problem 1 — Baseline Model
+
+Classify every applicant as `"good"`. Compute accuracy on the training data.
+
+```{r}
+baseline_preds <- fd_train |>
+  mutate(.pred_class = factor("good", levels = levels(risk_flag)))
+
+baseline_acc <- accuracy(baseline_preds, truth = risk_flag, estimate = .pred_class)
+baseline_acc
+```
+
+*Baseline accuracy: The baseline model, predicting every applicant as "good", achieves an accuracy equal to the proportion of "good" cases in the training set, approximately 72.5%. Any useful model must exceed this 72.5% threshold; otherwise, simply predicting "good" for every applicant would be sufficient.*
+
+### Problem 2 — Decision Tree
+
+Fit a decision tree to predict `risk_flag ~ . - loan_amount`. Evaluate on training and testing sets.
+
+```{r}
+tree_spec <- decision_tree() |>
+  set_engine("rpart") |>
+  set_mode("classification")
+
+tree_fit <- tree_spec |>
+  fit(risk_flag ~ . - loan_amount, data = fd_train)
+
+# Training metrics
+tree_train_preds <- predict(tree_fit, fd_train) |>
+  bind_cols(fd_train |> select(risk_flag))
+
+tree_train_metrics <- my_class_metrics(tree_train_preds, truth = risk_flag, estimate = .pred_class)
+tree_train_metrics
+
+# Testing metrics
+tree_test_preds <- predict(tree_fit, fd_test) |>
+  bind_cols(fd_test |> select(risk_flag))
+
+tree_test_metrics <- my_class_metrics(tree_test_preds, truth = risk_flag, estimate = .pred_class)
+tree_test_metrics
+```
+
+*Observations: The decision tree achieves 73.1% accuracy on the test set, barely above the 72.5% baseline. Sensitivity is poor at 30.6%, meaning the model misses nearly 70% of true bad-risk applicants, a costly error for a lender. Specificity is strong at 89.3%, correctly identifying most good-risk applicants. There is mild overfitting: training sensitivity (37.3%) noticeably exceeds test sensitivity (30.6%).*
+
+### Problem 3 — Logistic Regression
+
+Fit a logistic regression to predict `risk_flag ~ . - loan_amount`. Evaluate on training and testing sets.
+
+```{r}
+log_spec <- logistic_reg() |>
+  set_engine("glm") |>
+  set_mode("classification")
+
+log_fit <- log_spec |>
+  fit(risk_flag ~ . - loan_amount, data = fd_train)
+
+# Training metrics
+log_train_preds <- predict(log_fit, fd_train) |>
+  bind_cols(fd_train |> select(risk_flag))
+
+log_train_metrics <- my_class_metrics(log_train_preds, truth = risk_flag, estimate = .pred_class)
+log_train_metrics
+
+# Testing metrics
+log_test_preds <- predict(log_fit, fd_test) |>
+  bind_cols(fd_test |> select(risk_flag))
+
+log_test_metrics <- my_class_metrics(log_test_preds, truth = risk_flag, estimate = .pred_class)
+log_test_metrics
+```
+
+*Observations: Logistic regression achieves 74.3% test accuracy, a modest improvement over the 72.5% baseline and slightly better than the decision tree (73.1%). However, sensitivity remains low at 30.6%. The model still misses roughly 70% of true bad-risk applicants. Specificity is 90.9%, meaning it reliably identifies good-risk applicants. Minimal overfitting is present, with training accuracy at 76.0% versus 74.3% on the test set.*
+
+### Problem 4 — Random Forest
+
+Fit two random forests (`mtry = 3` and `mtry = 4`, `trees = 500`). Evaluate on training and testing sets.
+
+```{r}
+set.seed(92)
+
+rf3_spec <- rand_forest(mtry = 3, trees = 500) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("classification")
+
+rf3_fit <- rf3_spec |>
+  fit(risk_flag ~ . - loan_amount, data = fd_train)
+
+# Training metrics
+rf3_train_preds <- predict(rf3_fit, fd_train) |>
+  bind_cols(fd_train |> select(risk_flag))
+
+rf3_train_metrics <- my_class_metrics(rf3_train_preds, truth = risk_flag, estimate = .pred_class)
+rf3_train_metrics
+
+# Testing metrics
+rf3_test_preds <- predict(rf3_fit, fd_test) |>
+  bind_cols(fd_test |> select(risk_flag))
+
+rf3_test_metrics <- my_class_metrics(rf3_test_preds, truth = risk_flag, estimate = .pred_class)
+rf3_test_metrics
+```
+
+```{r}
+set.seed(92)
+
+rf4_spec <- rand_forest(mtry = 4, trees = 500) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("classification")
+
+rf4_fit <- rf4_spec |>
+  fit(risk_flag ~ . - loan_amount, data = fd_train)
+
+# Training metrics
+rf4_train_preds <- predict(rf4_fit, fd_train) |>
+  bind_cols(fd_train |> select(risk_flag))
+
+rf4_train_metrics <- my_class_metrics(rf4_train_preds, truth = risk_flag, estimate = .pred_class)
+rf4_train_metrics
+
+# Testing metrics
+rf4_test_preds <- predict(rf4_fit, fd_test) |>
+  bind_cols(fd_test |> select(risk_flag))
+
+rf4_test_metrics <- my_class_metrics(rf4_test_preds, truth = risk_flag, estimate = .pred_class)
+rf4_test_metrics
+```
+
+*Observations: Both random forests severely overfit. Training accuracy exceeds 96% for both models, yet test accuracy falls to roughly 73% which is nearly identical to the baseline. More critically, test sensitivity collapses to 26%, worse than both the decision tree and logistic regression. Increasing mtry from 3 to 4 provides no meaningful improvement on test data. Neither random forest model is recommended for deployment.*
+
+### Problem 5 — Classification Summary Table
+
+Create a `gt` table showing accuracy, sensitivity, and specificity for each model on training and testing data. Include the baseline.
+
+```{r}
+# Helper to extract a metric value
+get_metric <- function(metrics_df, metric_name) {
+  metrics_df |> filter(.metric == metric_name) |> pull(.estimate) |> round(4)
+}
+
+# Baseline: sensitivity and specificity
+baseline_train_full <- bind_rows(
+  accuracy(baseline_preds, truth = risk_flag, estimate = .pred_class),
+  sensitivity(baseline_preds, truth = risk_flag, estimate = .pred_class),
+  specificity(baseline_preds, truth = risk_flag, estimate = .pred_class)
+)
+
+summary_df <- tibble(
+  Model = c("Baseline", "Decision Tree", "Logistic Regression", "Random Forest (mtry=3)", "Random Forest (mtry=4)"),
+  Train_Accuracy   = c(get_metric(baseline_train_full, "accuracy"),
+                       get_metric(tree_train_metrics,  "accuracy"),
+                       get_metric(log_train_metrics,   "accuracy"),
+                       get_metric(rf3_train_metrics,   "accuracy"),
+                       get_metric(rf4_train_metrics,   "accuracy")),
+  Train_Sensitivity = c(get_metric(baseline_train_full, "sensitivity"),
+                        get_metric(tree_train_metrics,  "sensitivity"),
+                        get_metric(log_train_metrics,   "sensitivity"),
+                        get_metric(rf3_train_metrics,   "sensitivity"),
+                        get_metric(rf4_train_metrics,   "sensitivity")),
+  Train_Specificity = c(get_metric(baseline_train_full, "specificity"),
+                        get_metric(tree_train_metrics,  "specificity"),
+                        get_metric(log_train_metrics,   "specificity"),
+                        get_metric(rf3_train_metrics,   "specificity"),
+                        get_metric(rf4_train_metrics,   "specificity")),
+  Test_Accuracy    = c(NA,
+                       get_metric(tree_test_metrics,  "accuracy"),
+                       get_metric(log_test_metrics,   "accuracy"),
+                       get_metric(rf3_test_metrics,   "accuracy"),
+                       get_metric(rf4_test_metrics,   "accuracy")),
+  Test_Sensitivity = c(NA,
+                       get_metric(tree_test_metrics,  "sensitivity"),
+                       get_metric(log_test_metrics,   "sensitivity"),
+                       get_metric(rf3_test_metrics,   "sensitivity"),
+                       get_metric(rf4_test_metrics,   "sensitivity")),
+  Test_Specificity = c(NA,
+                       get_metric(tree_test_metrics,  "specificity"),
+                       get_metric(log_test_metrics,   "specificity"),
+                       get_metric(rf3_test_metrics,   "specificity"),
+                       get_metric(rf4_test_metrics,   "specificity"))
+)
+
+summary_df |>
+  gt() |>
+  tab_header(title = "Classification Model Performance Summary") |>
+  tab_spanner(label = "Training", columns = c(Train_Accuracy, Train_Sensitivity, Train_Specificity)) |>
+  tab_spanner(label = "Testing",  columns = c(Test_Accuracy,  Test_Sensitivity,  Test_Specificity)) |>
+  cols_label(
+    Train_Accuracy    = "Accuracy",
+    Train_Sensitivity = "Sensitivity",
+    Train_Specificity = "Specificity",
+    Test_Accuracy     = "Accuracy",
+    Test_Sensitivity  = "Sensitivity",
+    Test_Specificity  = "Specificity"
+  ) |>
+  fmt_number(columns = where(is.numeric), decimals = 4) |>
+  sub_missing(missing_text = "—")
+```
+
+*Observations: Logistic regression achieves the highest test accuracy (74.3%) and ties with the decision tree on sensitivity (30.7%). Both random forests massively overfit, training sensitivity exceeds 88% while test sensitivity falls below 27%. No model substantially improves sensitivity over the baseline, suggesting these predictors alone struggle to identify bad-risk applicants reliably.*
+
+### Problem 6 — Variable Importance
+
+Create at least **two** variable importance figures (one from random forest, one from logistic regression). Which variables appear most important for predicting default risk?
+
+```{r}
+# Random forest variable importance (mtry = 3)
+rf3_fit |>
+  extract_fit_engine() |>
+  vip(num_features = 10) +
+  labs(title = "Variable Importance — Random Forest (mtry = 3)") +
+  theme_minimal()
+```
+
+```{r}
+# Logistic regression variable importance
+log_fit |>
+  extract_fit_engine() |>
+  vip(num_features = 10) +
+  labs(title = "Variable Importance — Logistic Regression") +
+  theme_minimal()
+```
+
+*Answer: Both models consistently identify `prior_default` as the strongest predictor of default risk, by a wide margin in logistic regression. The random forest also ranks `annual_income`, `monthly_expenses`, and `total_assets` highly. Logistic regression surfaces `emp_years` and `employment_type` as secondary contributors. The categorical variables like `housing` and `marital_status` carry minimal weight in both models.*
+
+### Problem 7 — Best Classification Model
+
+Which model performs best on the testing data? Report the exact test accuracy of your best model and explain why it outperforms the baseline by that specific margin. Is there evidence of overfitting?
+
+*Answer: Logistic regression performs best on the testing data with a test accuracy of 0.7426, edging out the decision tree (0.7307), random forest mtry=3 (0.7381), and random forest mtry=4 (0.7321). It outperforms the baseline by approximately 1.8 percentage points (0.7426 vs. 0.7251), meaning it correctly identifies enough true bad-risk applicants to move beyond simply predicting everyone as "good." The most striking evidence of overfitting is in the random forests: RF (mtry=3) drops from 0.968 training accuracy to 0.738 on test data, a gap of over 23 points, suggesting the trees memorize the training set but fail to generalize. Logistic regression, by contrast, shows only a 1.7-point gap (0.760 train vs. 0.743 test), making it the most reliable model for deployment. However, all models, including logistic regression, achieve low test sensitivity (roughly 30%), meaning they still miss approximately 70% of true bad-risk applicants. Accuracy alone overstates model usefulness in this context.*
+
+---
+
+## Part C: Regression
+
+We will predict `loan_amount` using all variables except `risk_flag`. Use the same train/test split.
+
+```{r}
+reg_metrics <- metric_set(rmse, mae, rsq)
+```
+
+### Problem 1 — Linear Regression
+
+Fit a linear regression to predict `loan_amount ~ . - risk_flag`. Show model summary. Evaluate with `reg_metrics`.
+
+```{r}
+lm_spec <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+lm_fit <- lm_spec |>
+  fit(loan_amount ~ . - risk_flag, data = fd_train)
+
+# Model summary
+tidy(lm_fit)
+
+# Training metrics
+lm_train_preds <- predict(lm_fit, fd_train) |>
+  bind_cols(fd_train |> select(loan_amount))
+
+reg_metrics(lm_train_preds, truth = loan_amount, estimate = .pred)
+
+# Testing metrics
+lm_test_preds <- predict(lm_fit, fd_test) |>
+  bind_cols(fd_test |> select(loan_amount))
+
+reg_metrics(lm_test_preds, truth = loan_amount, estimate = .pred)
+```
+
+*Observations: The linear regression model fits well, achieving an R² of 0.910 on training and 0.903 on test data, indicating the model explains roughly 90% of variance in loan amount. RMSE increases only slightly from 882 to 912 on the test set, with no meaningful overfitting. Nearly all predictive power comes from `purchase_price` (p < 0.001), while most other predictors are not statistically significant.*
+
+### Problem 2 — Regression Tree
+
+Fit a decision tree in regression mode to predict `loan_amount`. Evaluate on training and testing sets.
+
+```{r}
+rtree_spec <- decision_tree() |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+rtree_fit <- rtree_spec |>
+  fit(loan_amount ~ . - risk_flag, data = fd_train)
+
+# Training metrics
+rtree_train_preds <- predict(rtree_fit, fd_train) |>
+  bind_cols(fd_train |> select(loan_amount))
+
+reg_metrics(rtree_train_preds, truth = loan_amount, estimate = .pred)
+
+# Testing metrics
+rtree_test_preds <- predict(rtree_fit, fd_test) |>
+  bind_cols(fd_test |> select(loan_amount))
+
+reg_metrics(rtree_test_preds, truth = loan_amount, estimate = .pred)
+```
+
+*Observations: The regression tree achieves an R² of 0.876 on the test set, underperforming linear regression (0.903). Test RMSE of 1,033 is also higher than linear regression's 912, meaning predictions are less accurate on average. There is mild overfitting, training R² is 0.889 versus 0.876 on test. Overall, the regression tree is the weakest regression model.*
+
+### Problem 3 — Random Forest Regression
+
+Fit a random forest (`mtry = 3`, `trees = 500`) in regression mode. Evaluate on training and testing sets.
+
+```{r}
+set.seed(92)
+
+rfr_spec <- rand_forest(mtry = 3, trees = 500) |>
+  set_engine("ranger", importance = "impurity") |>
+  set_mode("regression")
+
+rfr_fit <- rfr_spec |>
+  fit(loan_amount ~ . - risk_flag, data = fd_train)
+
+# Training metrics
+rfr_train_preds <- predict(rfr_fit, fd_train) |>
+  bind_cols(fd_train |> select(loan_amount))
+
+reg_metrics(rfr_train_preds, truth = loan_amount, estimate = .pred)
+
+# Testing metrics
+rfr_test_preds <- predict(rfr_fit, fd_test) |>
+  bind_cols(fd_test |> select(loan_amount))
+
+reg_metrics(rfr_test_preds, truth = loan_amount, estimate = .pred)
+```
+
+*Observations: The regression random forest severely overfits. Training RMSE is 459 and R² is 0.980, but test RMSE jumps to 1,027 and R² falls to 0.884, the model memorizes the training data but generalizes poorly. Despite its complexity, it underperforms simple linear regression on the test set (R² 0.884 vs. 0.903). This is the worst-generalizing regression model.*
+
+### Problem 4 — Regression Summary Table
+
+Create a `gt` table showing `rmse`, `mae`, and `rsq` for each model on training and testing data.
+
+```{r}
+get_reg_metric <- function(metrics_df, metric_name) {
+  metrics_df |> filter(.metric == metric_name) |> pull(.estimate) |> round(2)
+}
+
+reg_summary <- tibble(
+  Model = c("Linear Regression", "Regression Tree", "Random Forest (mtry=3)"),
+  Train_RMSE = c(get_reg_metric(reg_metrics(lm_train_preds,    truth = loan_amount, estimate = .pred), "rmse"),
+                 get_reg_metric(reg_metrics(rtree_train_preds, truth = loan_amount, estimate = .pred), "rmse"),
+                 get_reg_metric(reg_metrics(rfr_train_preds,   truth = loan_amount, estimate = .pred), "rmse")),
+  Train_MAE  = c(get_reg_metric(reg_metrics(lm_train_preds,    truth = loan_amount, estimate = .pred), "mae"),
+                 get_reg_metric(reg_metrics(rtree_train_preds, truth = loan_amount, estimate = .pred), "mae"),
+                 get_reg_metric(reg_metrics(rfr_train_preds,   truth = loan_amount, estimate = .pred), "mae")),
+  Train_Rsq  = c(get_reg_metric(reg_metrics(lm_train_preds,    truth = loan_amount, estimate = .pred), "rsq"),
+                 get_reg_metric(reg_metrics(rtree_train_preds, truth = loan_amount, estimate = .pred), "rsq"),
+                 get_reg_metric(reg_metrics(rfr_train_preds,   truth = loan_amount, estimate = .pred), "rsq")),
+  Test_RMSE  = c(get_reg_metric(reg_metrics(lm_test_preds,    truth = loan_amount, estimate = .pred), "rmse"),
+                 get_reg_metric(reg_metrics(rtree_test_preds, truth = loan_amount, estimate = .pred), "rmse"),
+                 get_reg_metric(reg_metrics(rfr_test_preds,   truth = loan_amount, estimate = .pred), "rmse")),
+  Test_MAE   = c(get_reg_metric(reg_metrics(lm_test_preds,    truth = loan_amount, estimate = .pred), "mae"),
+                 get_reg_metric(reg_metrics(rtree_test_preds, truth = loan_amount, estimate = .pred), "mae"),
+                 get_reg_metric(reg_metrics(rfr_test_preds,   truth = loan_amount, estimate = .pred), "mae")),
+  Test_Rsq   = c(get_reg_metric(reg_metrics(lm_test_preds,    truth = loan_amount, estimate = .pred), "rsq"),
+                 get_reg_metric(reg_metrics(rtree_test_preds, truth = loan_amount, estimate = .pred), "rsq"),
+                 get_reg_metric(reg_metrics(rfr_test_preds,   truth = loan_amount, estimate = .pred), "rsq"))
+)
+
+reg_summary |>
+  gt() |>
+  tab_header(title = "Regression Model Performance Summary") |>
+  tab_spanner(label = "Training", columns = c(Train_RMSE, Train_MAE, Train_Rsq)) |>
+  tab_spanner(label = "Testing",  columns = c(Test_RMSE,  Test_MAE,  Test_Rsq)) |>
+  cols_label(
+    Train_RMSE = "RMSE", Train_MAE = "MAE", Train_Rsq = "R²",
+    Test_RMSE  = "RMSE", Test_MAE  = "MAE", Test_Rsq  = "R²"
+  )
+```
+
+*Observations: Linear regression is the best-generalizing model, achieving the lowest test RMSE (911.56) and highest test R² (0.90). The random forest severely overfits, training RMSE of 458.81 nearly triples to 1,027.23 on the test set. The regression tree falls in between but still underperforms linear regression on all test metrics.*
+
+### Problem 5 — Best Regression Model
+
+Which regression model fits best on the testing data? Report the exact test RMSE and R² for your best model. Is there evidence of overfitting?
+
+*Answer: Linear regression performs best on the testing data with a test RMSE of 911.56 and R² of 0.903, outperforming both the regression tree (RMSE 1032.61, R² 0.876) and random forest (RMSE 1027.23, R² 0.884). The random forest shows the most severe overfitting: its training RMSE is just 458.81 (R² = 0.980), but test RMSE balloons to 1027.23, nearly a 570-point jump, indicating it memorized the training data rather than learning generalizable patterns. Linear regression, being a simpler model, generalizes cleanly with only a 30-point increase from training to test RMSE.*
+
+---
+
+## Part D: Synthesis and Reporting
+
+### Problem 1 — Classification vs. Regression
+
+Which question is more practically important from a credit union's perspective — identifying default risks or predicting loan size? Justify your answer.
+
+*Answer: Identifying default risk (classification) is more practically important for a credit union. A missed default, approving a bad-risk applicant, directly results in financial loss that may never be recovered. Predicting loan size, while useful for planning purposes, does not carry the same immediate risk: a credit union can adjust loan terms or caps regardless of the predicted amount. The asymmetry of consequences (unrecovered defaults vs. slightly misjudged loan sizing) makes classification the higher-stakes question.*
+
+### Problem 2 — Consistent Predictors
+
+Looking across your variable importance plots, which applicant characteristics appear most consistently important? Summarize in 3–4 sentences.
+
+*Answer: Prior default history (`prior_default`) is the single most consistent and powerful predictor across both classification and regression models. Annual income (`annual_income`) also appears prominently in both tasks, with higher income associated with lower default risk and larger loan requests. Total debt and total assets are important in the regression context, as they reflect an applicant's overall financial position and borrowing capacity. Employment years and employment type play a secondary but recurring role, particularly in the classification models.*
+
+### Problem 3 — Business Recommendation
+
+Give 2–3 specific, actionable recommendations to Rocky Mountain Lending Co.'s loan underwriting team. Cite specific variables and direction of effect.
+
+*Recommendations: First, treat prior default history as a near-disqualifying flag, applicants with a prior default (`prior_default = yes`) are dramatically more likely to be classified as bad risk and should face heightened scrutiny or stricter terms. Second, weight annual income heavily in underwriting decisions; applicants with lower incomes show substantially elevated default rates, and income thresholds could be built into automated approval tiers. Third, monitor the debt-to-income ratio as a composite risk signal, applicants carrying high total debt relative to their income were consistently associated with bad-risk outcomes, and setting a maximum acceptable ratio would help screen out marginal cases before manual review. Though the median difference between risk groups is modest, extreme DTI values appear disproportionately among bad-risk applicants and warrant additional manual review.*
+
+### Problem 4 — Misclassification Analysis
+
+Identify **three applicants** that your best classification model predicted incorrectly (i.e., predicted "good" but were actually "bad", or vice versa). For each, report their key characteristics. What do these cases have in common, and why might the model struggle with applicants like these?
+
+*Hint: Use `filter(.pred_class != risk_flag)` on your test predictions to find misclassified cases.*
+
+```{r}
+# Get best model test predictions (logistic regression — best test accuracy)
+best_preds <- predict(log_fit, fd_test) |>
+  bind_cols(fd_test)
+
+misclassified <- best_preds |>
+  filter(.pred_class != risk_flag) |>
+  select(.pred_class, risk_flag, prior_default, annual_income, total_debt, employment_type, app_age) |>
+  slice(1:3)
+
+misclassified
+```
+
+*Analysis: All three misclassified applicants were predicted "good" but were actually "bad" risk. The most striking commonality is that none of them have a prior default, since `prior_default` is the strongest predictor in the model, its absence strongly pushes predictions toward "good," even when other signals point to risk. Two of the three have non-standard employment (freelance, part-time), and one (row 3) has a relatively high income of $60,385 with full-time employment, a profile that looks financially stable on paper. The model struggles with these cases because their "surface-level" profile mimics good-risk applicants, and without a prior default flag to anchor a "bad" prediction, the remaining features are not strong enough to override the default toward the majority class.*

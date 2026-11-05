@@ -1,0 +1,302 @@
+---
+title: "Case Study One"
+subtitle: "E-Commerce Analytics: From Data to Decisions"
+author: "Finley Hardie"
+format:
+  html:
+    self-contained: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2)
+library(dplyr)
+library(janitor)
+library(lubridate)
+library(scales)
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd_customers    <- read.csv("../data/customers.csv")    |> clean_names()
+fd_products     <- read.csv("../data/products.csv")     |> clean_names()
+fd_transactions <- read.csv("../data/transactions.csv") |>
+  clean_names() |>
+  mutate(transaction_date = ymd(transaction_date))
+fd_summary      <- read.csv("../data/customer_summary.csv") |> clean_names()
+```
+
+## Part A: Exploratory Analysis and Visualization
+
+### Problem 1
+
+Join the data. Use `left_join()` to combine `fd_transactions` with `fd_customers` (on `customer_id`) and `fd_products` (on `product_id`). Call the result `fd`.
+
+```{r}
+# Select only non-overlapping columns from fd_products to avoid duplicate
+# columns — category and cost are already present in fd_transactions.
+fd <- fd_transactions |>
+  left_join(fd_customers, by = "customer_id") |>
+  left_join(
+    fd_products |> select(product_id, product_name, base_price),
+    by = "product_id"
+  )
+```
+
+### Problem 2
+
+Create a figure comparing **total revenue** by **product category**. Order bars from highest to lowest. Briefly describe what you find.
+
+```{r}
+fd |>
+  group_by(category) |>
+  summarise(total_revenue = sum(total_price, na.rm = TRUE)) |>
+  arrange(desc(total_revenue)) |>
+  mutate(category = factor(category, levels = category)) |>
+  ggplot(aes(x = category, y = total_revenue)) +
+  geom_col(fill = "#2c5f8a") +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Total Revenue by Product Category (2022–2024)",
+    x     = "Product Category",
+    y     = "Total Revenue ($)"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Electronics is the clear top revenue driver at roughly $1.3 million over the period, followed by Home & Garden (~$1.0M) and Automotive (~$853K). There is a drop-off in the bottom three categories, which together account for less revenue than Electronics alone.
+
+### Problem 3
+
+Create a line chart showing **monthly total revenue** from 2022 through 2024. Describe the overall trend and any seasonal patterns.
+
+```{r}
+fd |>
+  mutate(month_year = floor_date(transaction_date, "month")) |>
+  filter(month_year < as.Date("2024-01-01")) |>
+  group_by(month_year) |>
+  summarise(monthly_revenue = sum(total_price, na.rm = TRUE)) |>
+  ggplot(aes(x = month_year, y = monthly_revenue)) +
+  geom_line(color = "navy", linewidth = 1) +
+  geom_point(color = "navy", size = 2) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Monthly Total Revenue (2022–2024)",
+    x     = "Month",
+    y     = "Total Revenue ($)"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Revenue shows a strong upward trend across the entire period, growing from around $29K in January 2022 to over $525K by December 2023. A seasonal pattern is also visible: in the early months of each year, revenue dips (jan, feb) and then rises through summer and into the holiday season, the highest totals occur in November and December. This pattern repeats in both years, suggesting predictable seasonality.
+
+### Problem 4
+
+Create one additional figure of your choice. State what you are investigating and summarize what you find.
+
+I want to explore whether certain marketing channels drive more profits than others, and whether that profitability differs across product categories. Understanding which channel & category combinations yield the highest profit margins is important when deciding how to use the marketting budget.
+```{r}
+fd |>
+  group_by(category, marketing_channel) |>
+  summarise(avg_margin = mean(profit_margin, na.rm = TRUE), .groups = "drop") |>
+  ggplot(aes(x = marketing_channel, y = category, fill = avg_margin)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  scale_fill_gradient2(
+    low      = "#d73027",
+    mid      = "#ffffbf",
+    high     = "#1a9641",
+    midpoint = 0,
+    name     = "Avg Profit\nMargin"
+  ) +
+  labs(
+    title = "Average Profit Margin by Category and Marketing Channel",
+    x     = "Marketing Channel",
+    y     = "Product Category"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The heatmap shows that profitability varies more by product category than by marketing channel. Most of the categories show consistently positive profit margins across every channel, while Health and Beauty are deeply unprofitable, regardless of how customers arrive. Clothing is slightly negative and Home & Garden is near breakeven. No one marketing channel is always the best, so pricing and costs by category matter more.
+
+## Part B: Customer Segmentation
+
+### Problem 1
+
+Scale the `recency`, `frequency`, and `monetary` columns from `fd_summary`. Save the result as `fd_km`.
+
+```{r}
+fd_km <- fd_summary |>
+  select(recency, frequency, monetary) |>
+  scale()
+```
+
+### Problem 2
+
+Run k-means clustering for k = 2 through 6. Create an elbow plot and choose an appropriate k.
+
+```{r}
+set.seed(1234)
+
+wss <- sapply(2:6, function(k) {
+  kmeans(fd_km, centers = k, nstart = 25)$tot.withinss
+})
+
+data.frame(k = 2:6, wss = wss) |>
+  ggplot(aes(x = k, y = wss)) +
+  geom_line(color = "navy", linewidth = 1) +
+  geom_point(color = "navy", size = 3) +
+  scale_x_continuous(breaks = 2:6) +
+  labs(
+    title = "Elbow Plot: Within-Cluster Sum of Squares",
+    x     = "Number of Clusters (k)",
+    y     = "Total Within-Cluster SS"
+  ) +
+  theme_bw()
+```
+
+I chose k = 3 because the elbow plot shows the steepest drop going from k = 2 to k = 3. After k = 3, the improvement per additional cluster flattens out. Adding more clusters yields diminishing returns. Three clusters also produces interpretable, business-meaningful segments.
+
+### Problem 3
+
+Refit k-means with your chosen k. Append the cluster assignment to `fd_summary` as a column called `cluster`.
+
+```{r}
+set.seed(5678)
+
+km_final <- kmeans(fd_km, centers = 3, nstart = 25)
+
+fd_summary <- fd_summary |>
+  mutate(cluster = as.factor(km_final$cluster))
+```
+
+### Problem 4
+
+Create **two figures** showing how the clusters differ across the RFM variables.
+
+```{r}
+ggplot(fd_summary, aes(x = recency, y = monetary, color = cluster)) +
+  geom_point(alpha = 0.6, size = 2) +
+  scale_color_brewer("Cluster", palette = "Set1") +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Customer Clusters: Recency vs. Monetary Value",
+    x     = "Recency (days since last purchase)",
+    y     = "Total Spend ($)"
+  ) +
+  theme_bw()
+```
+
+```{r}
+ggplot(fd_summary, aes(x = cluster, y = frequency, fill = cluster)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Purchase Frequency by Customer Cluster",
+    x     = "Customer Cluster",
+    y     = "Purchase Frequency"
+  ) +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+### Problem 5
+
+In 2–3 sentences per cluster, characterize each group in business terms.
+
+*Cluster descriptions:*
+
+**Cluster 1 —** The largest segment, these customers purchase occasionally (averaging ~4 orders) with moderate total spend (~$4,600). They represent a strong growth opportunity — targeted promotions or personalized outreach could move a meaningful share of this group toward higher engagement. I would call this the casual customer.
+
+**Cluster 2 —** This cluster has the fewest purchases (~2 orders), the lowest spend (~$2,600), and the longest time since their last purchase (~965 days). These customers have likely churned or are at serious risk of doing so, and would benefit from a re-engagement campaign offering an incentive to return. I would call this the dormant customer.
+
+**Cluster 3 —** This cluster contains the company's best customers: they purchase most frequently (averaging ~8 orders), have the highest total spend (~$11,000), and have purchased most recently. These customers should be the focus of loyalty rewards and retention programs to protect this high-revenue segment. I would call this the high value customer. 
+
+## Part C: Sales Trend Analysis
+
+### Problem 1
+
+Aggregate transactions to compute total monthly revenue. Add a time index `t` and a `month_factor` column.
+
+```{r}
+monthly_ts <- fd_transactions |>
+  mutate(month_year = floor_date(transaction_date, "month")) |>
+  filter(month_year < as.Date("2024-01-01")) |>
+  group_by(month_year) |>
+  summarise(monthly_revenue = sum(total_price, na.rm = TRUE)) |>
+  arrange(month_year) |>
+  mutate(
+    t            = 1:n(),
+    month_factor = as.factor(month(month_year))
+  )
+```
+
+### Problem 2
+
+Plot the monthly revenue time series.
+
+```{r}
+ggplot(monthly_ts, aes(x = month_year, y = monthly_revenue)) +
+  geom_line(color = "navy", linewidth = 1) +
+  geom_point(color = "navy", size = 2) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Monthly Total Revenue (2022–2023)",
+    x     = "Month",
+    y     = "Revenue ($)"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Problem 3
+
+Fit a linear model: `monthly_revenue ~ t + month_factor`. Show the model summary.
+
+```{r}
+fd_lm <- lm(monthly_revenue ~ t + month_factor, data = monthly_ts)
+summary(fd_lm)
+```
+
+### Problem 4
+
+Plot actual monthly revenue and the model's fitted values on the same chart.
+
+```{r}
+monthly_ts <- monthly_ts |>
+  mutate(fitted = fitted(fd_lm))
+
+ggplot(monthly_ts, aes(x = month_year)) +
+  geom_line(aes(y = monthly_revenue), color = "navy", linewidth = 1) +
+  geom_point(aes(y = monthly_revenue), color = "navy", size = 2) +
+  geom_line(aes(y = fitted), color = "maroon", linewidth = 1, linetype = "dashed") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = dollar_format()) +
+  labs(
+    title = "Monthly Revenue: Actual vs. Fitted Model",
+    x     = "Month",
+    y     = "Revenue ($)",
+    caption = "Navy = Actual  |  Maroon dashed = Fitted"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Problem 5
+
+Which months show the highest and lowest predicted revenue? Support your answer with model output.
+
+*Answer:* **July** shows the highest predicted revenue and **February** shows the lowest. The model's `month_factor7` coefficient is +$44,904, the largest positive seasonal adjustment of any month — meaning July is predicted to generate approximately $44,904 more than January (the reference month) after accounting for the underlying growth trend. The `month_factor2` coefficient is -$34,340, the most negative of all months, making February the weakest seasonal period. These results are consistent with the time series plot: summer months, especially July and August, visually peak above the trend line each year, while February consistently falls below it.
+
+
+## Part D: Dashboard
+
+See the separate dashboard template file (`case-1-ecommerce-analytics-dashboard-template.qmd`). Render it and submit it along with this HTML report.

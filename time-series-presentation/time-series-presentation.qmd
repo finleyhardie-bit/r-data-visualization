@@ -1,0 +1,503 @@
+---
+title: "Time Series Analysis"
+subtitle: "INFO 3200 · Week 5"
+author: "Finley Hardie & Jack Callahan"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    transition: fade
+    code-line-numbers: false
+    fig-align: center
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+```
+
+## What Is Time Series Data? {.center}
+
+> Data points collected **at regular intervals over time** — where the *order* of observations matters.
+
+. . .
+
+| Regular Data | Time Series Data |
+|---|---|
+| Rows are independent | Rows are connected in sequence |
+| Order doesn't matter | Past values influence future values |
+| Predict a category or value | Predict what comes *next* |
+
+::: notes
+Start by contrasting this with data they already know. In regression or clustering, you could shuffle the rows and still get the same result. Time series is different — each observation is tied to a moment in time, and the value today is influenced by what happened before it.
+
+Simple analogy: tracking your Venmo balance every day. You're not just curious about the average — you want to know when you spend most, whether you're trending broke before spring break. That's a time series problem.
+:::
+
+---
+
+## You Already Interact With Time Series {.center}
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**Business & Finance**
+
+- Stock prices, revenue, sales
+- Website traffic, click rates
+- Inventory demand
+
+**Science & Society**
+
+- Temperature, CO₂ levels
+- Hospital admissions
+- Polling numbers
+:::
+
+::: {.column width="50%"}
+**Things You Actually Use**
+
+- Spotify stream counts
+- App daily active users
+- Flight prices by day
+- Player stats across a season
+:::
+
+::::
+
+::: notes
+Pretty much any time a company tracks a metric over time, they have a time series problem. Netflix predicts server demand. Amazon forecasts holiday inventory. The Fed watches inflation month over month. This isn't a niche method — it's one of the most used techniques in industry.
+:::
+
+---
+
+## Meet the Dataset: AirPassengers
+
+*Monthly US airline passengers, 1949–1960. Built into R — no file needed.*
+
+> Each point = one month. The value = thousands of people who flew that month.
+
+We'll use this for every example today. Before we do anything else — just look at it.
+
+::: notes
+Before we break anything apart, let's look at the raw data. Every point is one month, and the y-axis is thousands of passengers. You can already see two things: the overall level is rising (trend), and there are spikes that repeat every summer (seasonality). Our job for the next few slides is to pull those apart.
+:::
+
+---
+
+```{r airpassengers-plot, fig.height=5.5, fig.width=11}
+ggplot(data.frame(time = time(AirPassengers), y = as.numeric(AirPassengers)),
+       aes(time, y)) +
+  geom_line(color = "#2c7bb6", linewidth = 1.2) +
+  labs(title = "Monthly Airline Passengers (1949–1960)",
+       x = "Year", y = "Passengers (thousands)") +
+  theme_minimal(base_size = 15)
+```
+
+::: notes
+Point out: even without any analysis, you can see the trend going up and the same summer spike repeating year after year. That visual intuition is your starting point — decomposition just makes it mathematical.
+:::
+
+---
+
+## The Three Components
+
+*Every time series is made of these three layers — stacked on top of each other.*
+
+- **Trend** — the long-term direction of the data (going up, down, or flat over years)
+- **Seasonality** — a repeating pattern on a fixed cycle (every week, month, or year)
+- **Noise** — random leftover variation that doesn't follow any pattern
+
+::: notes
+This is the most important conceptual slide. Think of it like decomposing a song into separate tracks — bass line (trend), rhythm (seasonality), and background noise. The next slide shows all three pulled apart from the AirPassengers data.
+:::
+
+---
+
+```{r decomp-plot, fig.height=6, fig.width=11}
+decomp <- decompose(AirPassengers)
+
+p1 <- ggplot(data.frame(time = time(AirPassengers), y = as.numeric(AirPassengers)),
+             aes(time, y)) +
+  geom_line(color = "#2c7bb6", linewidth = 0.9) +
+  labs(title = "Observed (original data)", y = NULL, x = NULL) +
+  theme_minimal(base_size = 13)
+
+p2 <- ggplot(data.frame(time = time(AirPassengers), y = as.numeric(decomp$trend)),
+             aes(time, y)) +
+  geom_line(color = "#d7191c", linewidth = 0.9, na.rm = TRUE) +
+  labs(title = "Trend — slow upward drift in passenger counts", y = NULL, x = NULL) +
+  theme_minimal(base_size = 13)
+
+p3 <- ggplot(data.frame(time = time(AirPassengers), y = as.numeric(decomp$seasonal)),
+             aes(time, y)) +
+  geom_line(color = "#1a9641", linewidth = 0.9) +
+  labs(title = "Seasonality — same summer spike, every single year", y = NULL, x = NULL) +
+  theme_minimal(base_size = 13)
+
+p4 <- ggplot(data.frame(time = time(AirPassengers), y = as.numeric(decomp$random)),
+             aes(time, y)) +
+  geom_line(color = "#756bb1", linewidth = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.4) +
+  labs(title = "Noise — random variation, bouncing around zero", y = NULL, x = NULL) +
+  theme_minimal(base_size = 13)
+
+(p1 | p2) / (p3 | p4)
+```
+
+::: notes
+Same dataset, just pulled apart. If you added all three back together you'd get the original data exactly.
+
+Trend: steady climb from ~200k to ~400k passengers. Air travel was brand new and booming post-WWII.
+Seasonality: the exact same wave shape repeating every 12 months — summer always spikes, winter always dips.
+Noise: what's left after removing the other two. Bounces around zero — just randomness we can't explain or predict.
+:::
+
+---
+
+## Stationarity: Why It Matters
+
+**A stationary series has a stable average and stable spread over time — it doesn't drift.**
+
+Most forecasting models require stationarity. Raw data almost never is. So we fix it.
+
+**The fix — differencing:** instead of modeling the raw value, model the *change* from one period to the next.
+
+> Revenue: $100k → $110k → $108k → $115k
+> Differenced: +$10k → -$2k → +$7k *(now bounces around zero)*
+
+- `ndiffs()` in R tells you how many times to difference your data
+
+::: notes
+Stationary means the series looks roughly the same throughout — same average, same spread. Non-stationary means it's drifting or getting more volatile. Most models assume stationarity. So your first job is often to transform the data. Differencing is the most common fix: instead of the price, model the change in price.
+:::
+
+---
+
+```{r stationarity-plot, fig.height=5.5, fig.width=11}
+set.seed(42)
+t <- 1:120
+non_stat <- 0.05 * t + rnorm(120, sd = 0.5 + 0.02 * t)
+stat_series <- diff(non_stat)
+
+p_ns <- ggplot(data.frame(t = t, y = non_stat), aes(t, y)) +
+  geom_line(color = "#d7191c", linewidth = 1) +
+  geom_smooth(method = "lm", se = FALSE, color = "#333333", linetype = "dashed", linewidth = 0.7) +
+  labs(title = "Non-Stationary (raw data)",
+       subtitle = "Mean is drifting upward — models can't handle this",
+       x = "Time", y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", color = "#d7191c"),
+        plot.subtitle = element_text(color = "#555555"))
+
+p_s <- ggplot(data.frame(t = t[-1], y = stat_series), aes(t, y)) +
+  geom_line(color = "#1a9641", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "#333333", linewidth = 0.7) +
+  labs(title = "Stationary (after differencing)",
+       subtitle = "Mean is flat around zero — models can work with this",
+       x = "Time", y = NULL) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(face = "bold", color = "#1a9641"),
+        plot.subtitle = element_text(color = "#555555"))
+
+p_ns | p_s
+```
+
+::: notes
+Red on the left = non-stationary. The dashed trend line shows it drifting upward. Green on the right = stationary after differencing. The dashed line is flat at zero — the series is just bouncing randomly around it. That's what models need to work with.
+:::
+
+---
+
+## Time Series in R: The Toolkit
+
+**We'll use the tidyverts ecosystem** — built to work with the tidyverse you already know.
+
+```r
+library(tsibble)   # stores your data as a time-aware data frame
+library(feasts)    # visualizations and pattern detection
+library(fable)     # builds forecasting models
+```
+
+**What each package does:**
+
+- **tsibble** — like a regular tibble, but R knows which column is your time variable. Keeps data organized by date automatically.
+- **feasts** — *Feature Extraction And Statistics for Time Series.* Gives you ACF plots, decomposition, pattern summaries.
+- **fable** — where you actually build forecast models (ARIMA, ETS, etc.) using the same pipe syntax as tidyverse.
+
+> There's also a classic `forecast` package that's been around longer — you'll see it all over Stack Overflow.
+
+::: notes
+Tidyverts was designed to feel like tidyverse. Same pipes, same ggplot-style output. The three packages each handle one layer: storing data (tsibble), exploring it (feasts), modeling it (fable).
+
+The older `forecast` package is still everywhere — we're using it for today's demo since it requires zero extra setup, but tidyverts is what you'd use on a real project.
+:::
+
+---
+
+## Creating a Time Series in R
+
+```{r code-demo, echo=TRUE, eval=FALSE}
+data(AirPassengers)    # Line 1: load the dataset — built into R, no file needed
+class(AirPassengers)   # Line 2: confirm R sees it as a time series ("ts") object
+
+plot(AirPassengers,    # Line 3: plot it — R auto-labels the x-axis by year
+     main = "Monthly Airline Passengers (1949–1960)",
+     ylab = "Passengers (thousands)",
+     col  = "#2c7bb6",
+     lwd  = 2)
+```
+
+**What each line does:**
+
+- `data()` — loads a built-in R dataset. No CSV, no file path.
+- `class()` — confirms R treats it as `"ts"` (time series), not a plain number.
+- `plot()` — R recognizes the `ts` type and draws the time axis automatically.
+
+::: notes
+Three lines to go from nothing to a plotted time series. data() pulls in the built-in dataset. class() confirms R knows it's a time series object — it prints "ts" in the console. plot() is smart enough to handle a ts object and draw the time axis correctly without any configuration.
+
+Own data: ts(your_vector, start = c(2020, 1), frequency = 12). Frequency = observations per cycle. 12 = monthly, 52 = weekly, 365 = daily.
+:::
+
+---
+
+```{r code-demo-plot, fig.height=5.5, fig.width=11}
+ggplot(data.frame(time = time(AirPassengers), y = as.numeric(AirPassengers)),
+       aes(time, y)) +
+  geom_line(color = "#2c7bb6", linewidth = 1.2) +
+  labs(title = "plot(AirPassengers) — what three lines of code produces",
+       x = "Year", y = "Passengers (thousands)") +
+  theme_minimal(base_size = 15)
+```
+
+::: notes
+This is the output of that code. Point out: you can already see the trend going up and the summer spikes repeating every year — trend and seasonality are visible just from the raw plot. This is always your first step: look at it.
+:::
+
+---
+
+## Decomposing a Time Series
+
+**Decomposition** = breaking a time series into its three parts (trend, seasonality, noise) so you can see what's driving the data *before* you model it.
+
+```{r decomp-code, echo=TRUE, eval=FALSE}
+# Step 1: split AirPassengers into its three components
+decomp_result <- decompose(AirPassengers)
+
+# Step 2: plot all four layers stacked — original + each component
+plot(decomp_result)
+```
+
+**What the code does:**
+
+- `decompose()` — mathematically separates trend, seasonal, and random from your `ts` object
+- `plot()` — stacks all four panels automatically: original on top, then each component
+
+> The blank edges on the trend line are normal — the math needs data on both sides of each point.
+
+::: notes
+Decompose just means "pull it apart." Two lines to do something that would take hours by hand. This is usually the very first thing you do with a new time series — decompose it, look at the pieces, decide what model makes sense.
+
+The blank edges on the trend: decomposition uses a moving average, which needs values on both sides of each point to calculate. No data before Jan 1949 or after Dec 1960, so those edges stay empty. Not a bug.
+:::
+
+---
+
+```{r decomp-full-plot, fig.height=6, fig.width=11}
+library(forecast)
+decomp_result <- decompose(AirPassengers)
+
+d1 <- ggplot(data.frame(t = time(AirPassengers), y = as.numeric(AirPassengers)), aes(t, y)) +
+  geom_line(color = "#2c7bb6", linewidth = 0.9) +
+  labs(title = "Observed — the raw data as recorded", x = NULL, y = "Passengers") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold"))
+
+d2 <- ggplot(data.frame(t = time(AirPassengers), y = as.numeric(decomp_result$trend)), aes(t, y)) +
+  geom_line(color = "#d7191c", linewidth = 0.9, na.rm = TRUE) +
+  labs(title = "Trend — slow upward drift, summer spikes removed", x = NULL, y = "Passengers") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold", color = "#d7191c"))
+
+d3 <- ggplot(data.frame(t = time(AirPassengers), y = as.numeric(decomp_result$seasonal)), aes(t, y)) +
+  geom_line(color = "#1a9641", linewidth = 0.9) +
+  labs(title = "Seasonality — the repeating summer spike, isolated", x = NULL, y = "Passengers") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold", color = "#1a9641"))
+
+d4 <- ggplot(data.frame(t = time(AirPassengers), y = as.numeric(decomp_result$random)), aes(t, y)) +
+  geom_line(color = "#756bb1", linewidth = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.4) +
+  labs(title = "Noise — random leftover variation, bounces around zero", x = "Year", y = "Passengers") +
+  theme_minimal(base_size = 12) + theme(plot.title = element_text(face = "bold", color = "#756bb1"))
+
+(d1 / d2 / d3 / d4)
+```
+
+::: notes
+Walk through each panel top to bottom. Observed = original data, nothing changed. Trend = if you smoothed out all the spikes, this is where the baseline was heading — steady climb. Seasonality = the exact same wave shape pulled out and shown by itself, repeating every 12 months like clockwork. Noise = what's left after removing the other two — just random bouncing around zero.
+
+Note the blank edges on the trend line — not a bug. The math needs data on both sides of each point, so the very start and end are always empty.
+:::
+
+---
+
+## Forecasting: What Comes Next?
+
+Two of the most common approaches:
+
+:::: {.columns}
+
+::: {.column width="50%"}
+**ARIMA**
+AutoRegressive Integrated Moving Average
+
+- Uses **past values** and **past errors** to predict the future
+- Great for data with trends
+- The "I" = handles non-stationarity for you
+- `auto.arima()` picks the best version automatically
+:::
+
+::: {.column width="50%"}
+**ETS (Exponential Smoothing)**
+Error, Trend, Seasonality
+
+- Gives **more weight to recent observations**
+- Older data fades out over time
+- Great for data with strong seasonality
+- `ets()` or `model(ETS(...))` in fable
+:::
+
+::::
+
+> The shaded region on the forecast = uncertainty. It gets wider the further out you go because guesses compound over time — a 1-month forecast is far more reliable than a 2-year one.
+
+::: notes
+ARIMA uses past values and past errors to project forward. auto.arima() tests dozens of configurations and returns the best — you don't tune it by hand.
+
+ETS is a weighted average: last month matters more than last year. Great for data with strong seasonal patterns like our airline data.
+
+Key point on uncertainty: every forecast is a guess. The shaded confidence region on the next slide shows exactly how uncertain the model is. Narrow = confident, wide = less confident. The further you forecast, the wider it gets — uncertainty compounds.
+:::
+
+---
+
+```{r forecast-plot, fig.height=5.5, fig.width=11}
+fit <- auto.arima(AirPassengers)
+fc  <- forecast(fit, h = 24)
+autoplot(fc) +
+  labs(title = "2-Year Forecast — shaded region = uncertainty (wider = less certain)",
+       x = "Year", y = "Passengers (thousands)") +
+  theme_minimal(base_size = 14)
+```
+
+::: notes
+The dark blue line is the model's best guess. The shaded regions are confidence intervals — the lighter the shade, the less certain. See how they fan out the further right you go? That's honest forecasting. A model that shows a single thin line with no uncertainty region is lying to you.
+:::
+
+---
+
+## Autocorrelation: The Hidden Signal
+
+**ACF** = how strongly does today's value correlate with values from the past?
+
+- Each **bar** = one lag. **Lag 12 = 12 months ago.** On the chart, the x-axis counts in months — so lag 12 is the 12th bar from the left.
+- **Bar height** = correlation strength. Taller = stronger relationship.
+- **Bars outside the blue dashed lines** = statistically meaningful, not just noise.
+
+**ACF vs. PACF — what's the difference?**
+
+- **ACF** measures the *total* correlation between today and a past point — including any chain effects in between.
+- **PACF** (*Partial* ACF) measures only the *direct* correlation — it removes the chain.
+
+> **Example:** July → August → September. ACF says July and September are correlated (they are, through August). PACF says "no — September's connection to July disappears once you account for August being in between."
+
+::: notes
+Autocorrelation just means: how much does this series correlate with a past version of itself? Each bar is a different lag. Lag 1 = last month, lag 12 = same month last year.
+
+The ACF vs PACF distinction is key: ACF includes indirect relationships. If A predicts B and B predicts C, ACF says A and C are correlated. PACF isolates only the direct relationship — once you control for B, does A still predict C on its own? Usually no.
+
+For our airline data, the ACF spike at lag 12 is massive — that's July predicting next July, August predicting next August. The direct annual relationship is real and strong, not just a chain effect through the months in between. PACF confirms this.
+
+Data scientists use both plots together to choose ARIMA parameters. auto.arima() does this automatically.
+:::
+
+---
+
+```{r acf-plot, fig.height=5.5, fig.width=11}
+p_acf <- ggAcf(AirPassengers, lag.max = 36) +
+  geom_vline(xintercept = 12, color = "#d7191c", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = 12.5, y = 0.92, label = "← Lag 12\n(12 months ago)",
+           hjust = 0, color = "#d7191c", size = 4, fontface = "bold") +
+  labs(title = "ACF — total correlation with each past point",
+       subtitle = "Includes chain effects through intermediate months",
+       x = "Lag (months)", y = "Correlation") +
+  theme_minimal(base_size = 13)
+
+p_pacf <- ggPacf(AirPassengers, lag.max = 36) +
+  geom_vline(xintercept = 12, color = "#d7191c", linetype = "dashed", linewidth = 0.8) +
+  annotate("text", x = 12.5, y = 0.38, label = "← Lag 12",
+           hjust = 0, color = "#d7191c", size = 4, fontface = "bold") +
+  labs(title = "PACF — direct correlation only",
+       subtitle = "Chain effects removed — what's left is the true direct relationship",
+       x = "Lag (months)", y = "Partial Correlation") +
+  theme_minimal(base_size = 13)
+
+p_acf | p_pacf
+```
+
+::: notes
+Point to the red dashed line on both charts — that's lag 12, meaning "12 months ago." In the ACF, that bar is massive — July strongly predicts next July, August predicts next August. That's annual seasonality showing up as a mathematical correlation.
+
+In the PACF, lag 12 also shows up, but everything in between (lags 2-11) has been stripped out. The fact that it's still significant in the PACF means it's a real, direct relationship — not just a chain through the months in between.
+
+Together, these tell data scientists how to configure ARIMA. auto.arima() reads them automatically.
+:::
+
+---
+
+## Key Takeaways {.center}
+
+::: {.incremental}
+- **Time series** = ordered data over time — the sequence matters
+- Every series has **three components**: trend, seasonality, noise
+- Models require **stationarity** — we fix this with differencing
+- R's toolkit: `tsibble`, `feasts`, `fable` (tidyverts ecosystem)
+- **ACF plots** reveal hidden patterns that drive model choice
+:::
+
+. . .
+
+> The goal isn't a perfect prediction — it's a *calibrated* one, with honest uncertainty ranges.
+
+::: notes
+So to bring it all together — time series is just data with a time dimension where order matters. The three-component framework is your mental model. Before you model, check stationarity. R's tidyverts toolkit handles all of this. And forecasting is never about being exactly right — it's about being usefully right with honest uncertainty.
+
+Your professor will go deeper on the math. What we wanted to give you today is the vocabulary and intuition so that material clicks when you see it. Open it up for questions.
+:::
+
+---
+
+## Questions? {.center}
+
+<br>
+
+**Want to explore more?**
+
+- `?AirPassengers` in the R console — explore the dataset we used today
+- Search "tidyverts" or "fable R" to find free learning resources online
+
+<br>
+
+*Built with Quarto + Revealjs · Assisted by Claude (Anthropic)*
+
+::: notes
+That's it from us — happy to take any questions.
+
+Side note if anyone asks: Revealjs is a JavaScript framework that turns text files into browser-based slideshows. Quarto uses it under the hood when you set format: revealjs — so instead of a PowerPoint file, you get a self-contained webpage you can open in any browser.
+:::

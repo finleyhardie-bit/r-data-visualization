@@ -1,0 +1,150 @@
+---
+title: "Deviation, Distribution, and Correlation"
+subtitle: "Week Two Class Two"
+author: "Finley Hardie"
+format: 
+  html:
+    self-contained: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2) # For making data viz
+library(readxl) # Reading data in from Excel
+library(dplyr) # Data manipulation
+library(forcats) # Factor reordering
+library(lubridate) # Working with dates
+library(janitor) # cleaning functions, e.g. cleaning names
+library(ggcorrplot) # visualizing correlation matrices
+library(broom) # Produces tidy output for tables
+library(gt)
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd <- read_xlsx("clothes_expend.xlsx", sheet = "clothes_expend") |> 
+  clean_names()
+```
+
+## Instructions
+
+For questions 1 - 9, you will follow along with Ryan and insert the data visualizations into this Quarto document. You will use the `clothes_expend.xlsx` file located on Canvas to generate the figures. We will work in an `.R` file and transfer our code to this Quarto document for submission in Canvas. You will have to solve problem 10 and 11 on your own or with friends. 
+
+1. Compute a histogram for `price_index`. How would you describe the distribution? 
+
+```{r}
+#| echo: false
+#| message: false
+
+
+p <- ggplot(data = fd,
+            aes(x = price_index))
+p + geom_histogram(col = "gold", fill = "maroon") +
+  labs(x = "Price Index") + 
+  theme_minimal()
+```
+
+
+2. Using the same variable as in 1, add a density plot to the histogram. 
+
+```{r}
+#| echo: false
+#| message: false
+p + geom_histogram(aes(y = after_stat(density)), 
+                   col = "gold", fill = "maroon") +
+  geom_density(fill = "navy", alpha = .5, col = "lightblue") +
+  labs(x = "Price Index") + 
+  theme_minimal()
+```
+
+
+3. Compute summary statistics for `price_index`. 
+
+```{r}
+#| echo: false
+#| message: false
+p <- ggplot(data = fd,
+            aes(y = sales_index, x = realgdp_b))
+
+p + geom_point(alpha = .5) +
+  geom_smooth() + # method = "lm" adds the linear reg line
+  labs(x = "Real GDP",
+       y = "Sales Index") +
+  theme_minimal()
+```
+
+
+4. Compute the mean and standard deviation of `price_index`. 
+
+```{r}
+#| echo: false
+#| message: false
+summary(fd$price_index)
+```
+
+
+5. Compute additional summary statistics for all variables
+
+```{r}
+summary(fd)
+```
+
+
+6. Produce a correlation matrix for the `clothes_expend` data set. What variable seems to be the most correlated with `sales_index`, excluding `sales_b`?
+
+```{r}
+cor(fd)
+```
+
+
+7. This is a little hard to visualize, so let's try creating a nice visualization using the `ggcorrplot` package (Note: Install it if it's not installed.)
+
+```{r}
+#| echo: false
+#| message: false
+cor_mat <- cor(fd)
+ggcorrplot(cor_mat, hc.order = TRUE, type = "upper", method = "circle")
+
+p <- ggplot(data = fd,
+            aes(y = sales_index, x = realgdp_b))
+
+```
+
+
+8. Plot `realgdp_b` (x) versus `sales_index` (y). Add the linear regression line to the graph. 
+
+9. How do you perform a linear regression in R? 
+
+We can clean this output up using the `broom` and `gt` packages. The `gt` package is ridiculously and it's worth checking out the [`gt` website](https://gt.rstudio.com/index.html). 
+
+10. Repeat 1-4 using the `sales_index` variable. Comment on your findings. 
+```{r}
+p <- ggplot(data = fd,
+            aes(x = sales_index))
+p + geom_histogram(col = "gold", fill = "maroon") +
+  labs(x = "Sales Index") + 
+  theme_minimal()
+p + geom_histogram(aes(y = after_stat(density)), 
+                   col = "gold", fill = "maroon") +
+  geom_density(fill = "navy", alpha = .5, col = "lightblue") +
+  labs(x = "Sales Index") + 
+  theme_minimal()
+p <- ggplot(data = fd,
+            aes(y = sales_index, x = realgdp_b))
+
+p + geom_point(alpha = .5) +
+  geom_smooth() + # method = "lm" adds the linear reg line
+  labs(x = "Real GDP",
+       y = "Sales Index") +
+  theme_minimal()
+
+summary(fd$sales_index)
+
+```
+
+
+11. Repeat 8 - 9 using `price_index` (y) and `pop_m` (x). Comment on your findings. 

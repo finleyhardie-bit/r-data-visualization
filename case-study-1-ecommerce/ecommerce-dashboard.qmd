@@ -1,0 +1,137 @@
+---
+title: "E-Commerce Analytics Dashboard"
+subtitle: "Case Study One — Part D"
+author: "Finley Hardie"
+format: dashboard
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2)
+library(dplyr)
+library(janitor)
+library(lubridate)
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd_customers    <- read.csv("../data/customers.csv")    |> clean_names()
+fd_products     <- read.csv("../data/products.csv")     |> clean_names()
+fd_transactions <- read.csv("../data/transactions.csv") |>
+  clean_names() |>
+  mutate(transaction_date = ymd(transaction_date))
+fd_summary      <- read.csv("../data/customer_summary.csv") |> clean_names()
+
+fd <- fd_transactions |>
+  left_join(fd_customers, by = "customer_id") |>
+  left_join(
+    fd_products |> select(product_id, product_name, base_price),
+    by = "product_id"
+  )
+```
+
+```{r}
+#| label: prep-data
+#| include: false
+
+# Revenue by category
+revenue_by_cat <- fd |>
+  group_by(category) |>
+  summarise(total_revenue = sum(total_price, na.rm = TRUE)) |>
+  arrange(desc(total_revenue)) |>
+  mutate(category = factor(category, levels = category))
+
+# Monthly revenue with trend (complete months only)
+monthly_ts <- fd_transactions |>
+  mutate(month_year = floor_date(transaction_date, "month")) |>
+  filter(month_year < as.Date("2024-01-01")) |>
+  group_by(month_year) |>
+  summarise(monthly_revenue = sum(total_price, na.rm = TRUE)) |>
+  mutate(
+    t            = 1:n(),
+    month_factor = as.factor(month(month_year))
+  )
+
+fd_ts_lm <- lm(monthly_revenue ~ t + month_factor, data = monthly_ts)
+monthly_ts <- monthly_ts |>
+  mutate(fitted = predict(fd_ts_lm, newdata = monthly_ts))
+
+# Customer clusters
+set.seed(5678)
+fd_km <- fd_summary |> select(recency, frequency, monetary) |> scale()
+km    <- kmeans(fd_km, centers = 3, nstart = 25)
+fd_summary <- fd_summary |>
+  mutate(cluster = as.factor(km$cluster))
+```
+
+# Revenue
+
+## Row {height=100%}
+
+### Column {width=50%}
+
+```{r}
+#| title: "Revenue by Product Category"
+
+p <- ggplot(revenue_by_cat, aes(x = category, y = total_revenue))
+p + geom_col(fill = "#6e0000") +
+  labs(x = "Category", y = "Total Revenue ($)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**What this shows**: Total revenue by product category over the full 2022–2024 period. Electronics is the clear leader at ~$1.3M, followed by Home & Garden and Automotive. A business stakeholder should note the heavy concentration at the top — the bottom three categories combined generate less than Electronics alone.
+
+### Column {width=50%}
+
+```{r}
+#| title: "Monthly Revenue Trend"
+
+p <- ggplot(monthly_ts, aes(x = month_year, y = monthly_revenue))
+p + geom_line(col = "navy") +
+  geom_point(col = "navy", size = 1.5) +
+  geom_line(aes(y = fitted), col = "maroon", linewidth = 1) +
+  labs(x = "Month", y = "Revenue ($)") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**What this shows**: Actual monthly revenue (navy) alongside the fitted trend and seasonality model (maroon). Revenue grew roughly 18x from January 2022 to December 2023. The model (R² = 0.99) confirms a strong upward trend with July as the seasonal peak and February as the seasonal low each year.
+
+# Customers
+
+## Row {height=100%}
+
+### Column {width=50%}
+
+```{r}
+#| title: "Customer Clusters by RFM"
+
+p <- ggplot(fd_summary, aes(x = recency, y = monetary, col = cluster))
+p + geom_point(alpha = 0.6) +
+  scale_color_brewer("Cluster", palette = "Set1") +
+  labs(x = "Recency (days since last purchase)", y = "Monetary Value ($)") +
+  theme_bw()
+```
+
+**What this shows**: Each point is a customer, colored by segment. The high-value loyalists (Cluster 3) stand out with the highest spend; lapsed customers (Cluster 2) sit at the low end. A stakeholder should prioritize retaining Cluster 3 and re-engaging Cluster 2.
+
+### Column {width=50%}
+
+```{r}
+#| title: "Purchase Frequency by Cluster"
+
+p <- ggplot(fd_summary, aes(x = cluster, y = frequency, fill = cluster))
+p + geom_boxplot(alpha = 0.7) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(x = "Customer Cluster", y = "Purchase Frequency") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+**What this shows**: Distribution of purchase frequency within each customer segment. Cluster 3 purchases most frequently (~8 orders on average), while Cluster 2 averages only ~2. The gap between segments signals a clear opportunity to move casual buyers toward higher engagement.

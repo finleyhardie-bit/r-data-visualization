@@ -1,0 +1,195 @@
+---
+title: "Classification and Regression Trees"
+subtitle: "Week Six Class One"
+author: "Finley Hardie"
+format:
+  html:
+    embed-resources: true
+---
+
+```{r}
+#| label: load-packages
+#| include: false
+
+library(ggplot2) # For making data viz
+library(dplyr) # Data manipulation
+library(janitor) # clean names
+library(tidymodels) # Working with ML models made easy!
+library(rpart.plot)
+library(pdp)
+library(vip)
+```
+
+```{r}
+#| label: load-data
+#| include: false
+
+fd <- read.csv("~/Desktop/School/Current Classes/INFO_3200/data/boston-housing.csv") |>
+  clean_names() |>
+  mutate(cat_medv = as.factor(cat_medv),
+         chas = as.factor(chas))
+
+set.seed(123)
+fd_split <- initial_split(fd, prop = .8)
+fd_train <- training(fd_split)
+fd_test <- testing(fd_split)
+```
+
+## Background
+
+In this tutorial, we are going to work through how to fit a classification tree and a regression tree in R using the `tidymodels` framework.
+
+### Classification Tree
+
+We use a classification tree to predict category membership of units in (or out of) our sample. In this particular example, we will use all variables in the data set loaded above to predict `cat_medv`, a variable that indicates whether or not an observation is above the median home price. In the following code, we create an `decision_tree()` object using the `rpart` function (in the `set_engine` function). We explicitly set the `boston_classification` function that it is a classification problem in the third line. We then fit the model.
+
+```{r}
+boston_classification <- decision_tree() |>
+  set_engine("rpart") |>
+  set_mode("classification")
+
+boston_cl_fit <- boston_classification |>
+  fit(cat_medv ~ . - medv, data = fd_train)
+```
+
+How can we visualize the fitted model?
+
+```{r}
+rpart.plot(boston_cl_fit$fit, type = 5, extra = 104, roundint = F)
+```
+
+What does this tell us? First, it says that 81% of the observations were classified as a 0 (below median value) and 19% were classified as 1 (above). Further, you can see that a an observation with `rn` $< 6.9$ and `lstat` $< 5.1$ will be classified as a "above the median value (1)" using this classifier.
+
+The tree structure shows the most important splits at the top — `rm` (average number of rooms) and `lstat` (percentage of lower-status population) are the variables the algorithm keeps reaching for first. This makes intuitive sense: more rooms and a wealthier neighborhood both push home values higher. Each node in the tree shows the predicted class, the class probability, and the share of training observations landing in that node, so you can see not just *what* the tree predicts but *how confident* it is and *how many* homes follow each path.
+
+Here is how you can visualize the "Variable Importance".
+
+```{r}
+boston_cl_fit$fit |>
+  vip(aesthetics = list(fill = "#6e0000", col = "black")) +
+  theme_bw()
+```
+
+You can compute a confusion matrix using the `tidymodels` workflow relatively easily. Similarly, we can compute several summary measures such as the accuracy, sensitivity, specificity, and precision.
+
+```{r}
+pred_boston_fit <- boston_cl_fit |>
+  augment(fd_train)
+
+pred_boston_fit |>
+  conf_mat(truth = cat_medv, estimate = .pred_class)
+```
+
+```{r}
+my_class_metrics <- metric_set(accuracy, sensitivity, specificity, precision)
+
+pred_boston_fit |>
+  my_class_metrics(truth = cat_medv, estimate = .pred_class)
+```
+
+Our model was built on the training sample. It is possible to overfit, so we must test the model on a "test" set (created above) to make sure it does well on data that the model was not trained on. Therefore, we compute the same metrics on our test set.
+
+```{r}
+pred_boston_fit <- boston_cl_fit |>
+  augment(fd_test)
+
+pred_boston_fit |>
+  conf_mat(truth = cat_medv, estimate = .pred_class)
+```
+
+```{r}
+
+pred_boston_fit |>
+  my_class_metrics(truth = cat_medv, estimate = .pred_class)
+```
+
+What would we get for accuracy if we just classified everything as a zero in the training sample? Test sample?
+
+If we predicted class 0 (below median) for every single observation, our accuracy would just equal the proportion of 0s in the data — roughly 50% in the training sample and about the same in the test sample, since `cat_medv` was defined as above/below the overall median (so both classes are nearly equally represented). This is called the **null accuracy** or baseline accuracy. It is a useful sanity check: any model we build should comfortably beat it. If our classification tree only hits, say, 55% accuracy, it is barely doing better than just always guessing the majority class, which would not be very useful. Comparing the tree's test accuracy to the null accuracy gives a quick sense of how much value the model is actually adding.
+
+## Regression Tree
+
+First, we specify the model. We will still use the `rpart` as our engine, i.e. function underlying the fitting algorithm, but we specify the mode to be "regression" given that we are estimating a continuous variable.
+
+```{r}
+boston_reg <- decision_tree() |>
+  set_engine("rpart") |>
+  set_mode("regression")
+
+boston_reg_fit <- boston_reg |>
+  fit(medv ~ . - cat_medv, data = fd_train)
+```
+
+Visualize the tree.
+
+```{r}
+rpart.plot(boston_reg_fit$fit, type = 5, roundint = F)
+
+```
+
+We can look at what is referred to as a "partial dependence plot". What does this tell us? It shows the estimated median value for regions in our predictor variable space. For example:
+
+```{r}
+partial(boston_reg_fit$fit, train = fd_train,
+        pred.var = c("rm", "lstat")) |>
+  autoplot() +
+  theme_bw()
+```
+
+The partial dependence plot shows the marginal effect of `rm` and `lstat` on the predicted home value (`medv`), averaging over all other predictors. The surface reveals that predicted home values are highest when `rm` is large (many rooms) and `lstat` is small (low percentage of lower-status residents). The two predictors interact in a step-function pattern because the regression tree can only create rectangular regions — it cannot produce smooth curved surfaces. The flat plateaus visible in the plot correspond to the leaf nodes of the tree, each of which predicts a single constant value for all homes that fall into that region.
+
+Variable importance? Why yes, here you go.
+
+```{r}
+boston_reg_fit$fit |>
+  vip(aesthetics = list(fill = "#6e0000", col = "black")) +
+  theme_bw()
+```
+
+How well does the model peform on the training and testing samples? Remember, we don't want to overfit.
+
+```{r}
+pred_boston_fit <- boston_reg_fit |>
+  augment(fd_train)
+my_class_metrics <- metric_set(rmse, mae, rsq)
+
+pred_boston_fit |>
+  my_class_metrics(truth = medv, estimate = .pred)
+```
+
+```{r}
+pred_boston_fit <- boston_reg_fit |>
+  augment(fd_test)
+
+pred_boston_fit |>
+  my_class_metrics(truth = medv, estimate = .pred)
+```
+
+Comparing training and test performance tells us whether the regression tree is overfitting. If the RMSE on the training set is noticeably lower than on the test set (and R² is higher on training), that gap is evidence the tree memorized noise in the training data rather than learning generalizable patterns. A well-pruned tree should show reasonably similar metrics on both sets — some degradation on the test set is expected and normal, but a large jump is a red flag.
+
+We should always compare more complicated models to simple baselines. In this case, let's look at the summary measures for a multiple regression model.
+
+```{r}
+boston_reg <- linear_reg() |>
+  set_engine("lm") |>
+  set_mode("regression")
+
+boston_reg_fit <- boston_reg |>
+  fit(medv ~ . - cat_medv, data = fd_train)
+
+pred_boston_fit <- boston_reg_fit |>
+  augment(fd_train)
+
+pred_boston_fit |>
+  my_class_metrics(truth = medv, estimate = .pred)
+```
+
+```{r}
+pred_boston_fit <- boston_reg_fit |>
+  augment(fd_test)
+
+pred_boston_fit |>
+  my_class_metrics(truth = medv, estimate = .pred)
+```
+
+Comparing the regression tree to the linear regression baseline is a good reality check. If the tree's test RMSE is similar to or worse than linear regression, the added complexity of the tree is not paying off — and linear regression is far easier to interpret. If the tree does meaningfully better, it suggests there are non-linear relationships or interactions in the data that a straight-line model cannot capture. In practice, a single regression tree often performs comparably to OLS on structured datasets like Boston Housing, which is one reason ensemble methods (random forests, gradient boosting) are generally preferred over individual trees when prediction accuracy is the main goal.
